@@ -1,0 +1,100 @@
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, status
+from app.core.database import get_database
+from app.schemas.caso import CasoCreate, CasoUpdate, CasoResponse
+from typing import List
+
+from app.routers.users import obtener_usuario_actual
+
+router = APIRouter(
+    prefix="/casos",
+    tags=["Casos"]
+)
+
+@router.post("/", response_model=CasoResponse, status_code=status.HTTP_201_CREATED)
+async def crear_caso(caso: CasoCreate, db = Depends(get_database)):
+    # 1. Verificar si ya existe un caso con ese ID
+    caso_existente = await db["casos"].find_one({"id_caso": caso.id_caso})
+    if caso_existente:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"El caso con id_caso {caso.id_caso} ya existe."
+        )
+    
+    # 2. Convertir el esquema de Pydantic a diccionario e inyectar fecha por defecto
+    nuevo_caso = caso.model_dump()
+    nuevo_caso["fecha_creacion"] = nuevo_caso.get("fecha_creacion") or datetime.utcnow()
+    nuevo_caso["activo"] = True
+    
+    # 3. Insertar en MongoDB
+    try:
+        await db["casos"].insert_one(nuevo_caso)
+        return nuevo_caso
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al guardar en la DB: {e}")
+
+
+@router.get("/", response_model=List[CasoResponse])
+async def obtener_casos(skip: int = 0, limit: int = 50, db = Depends(get_database)):
+    # Buscamos solo los casos activos para el listado general
+    cursor = db["casos"].find({"activo": True}).skip(skip).limit(limit)
+    casos = await cursor.to_list(length=limit)
+    return casos
+
+
+@router.get("/{id_caso}", response_model=CasoResponse)
+async def obtener_caso_por_id(id_caso: int, db = Depends(get_database)):
+    caso = await db["casos"].find_one({"id_caso": id_caso})
+    if not caso:
+        raise HTTPException(status_code=404, detail="Caso no encontrado")
+    return caso
+
+
+@router.put("/{id_caso}", response_model=CasoResponse)
+async def actualizar_caso(
+    id_caso: int, 
+    caso_data: CasoUpdate, 
+    db = Depends(get_database),
+    usuario_actual: dict = Depends(obtener_usuario_actual) # <-- Inyectamos el usuario autenticado
+):
+    # ... tu lógica de comparación de campos ...
+    
+    # Y al armar el diccionario de auditoría, cambias esto:
+    registro_auditoria = {
+        "id_auditoria": int(id_auditoria),
+        "id_caso": int(id_caso),
+        "campo_modificado": str(campo),
+        "valor_anterior": valor_anterior,
+        "valor_nuevo": valor_nuevo,
+        "fecha_cambio": datetime.utcnow(),
+        "usuario_db": usuario_actual["nombre"] # <-- ¡Y listo! Guarda el nombre real de quien modificó
+    }
+
+
+@router.delete("/{id_caso}", status_code=status.HTTP_200_OK)
+async def eliminar_caso(id_caso: int, db = Depends(get_database)):
+    # El borrado lógico también altera el campo 'activo', por ende genera auditoría
+    caso_actual = await db["casos"].find_one({"id_caso": id_caso})
+    if not caso_actual:
+        raise HTTPException(status_code=404, detail="Caso no encontrado")
+        
+    if caso_actual.get("activo") is True:
+        id_auditoria = await get_next_sequence_value("id_auditoria", db)
+        
+        await db["historial_cambios_casos"].insert_one({
+            "id_auditoria": int(id_auditoria),
+            "id_caso": int(id_caso),
+            "campo_modificado": "activo",
+            "valor_anterior": True,
+            "valor_nuevo": False,
+            "fecha_cambio": datetime.utcnow(),
+            "usuario_db": "fastapi_backend_user"
+        })
+
+    resultado = await db["casos"].find_one_and_update(
+        {"id_caso": id_caso},
+        {"$set": {"activo": False}},
+        return_document=True
+    )
+    
+    return {"message": f"Caso {id_caso} desactivado correctamente y auditado."}
