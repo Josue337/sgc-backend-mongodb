@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.routers import casos, users, maestros
 
@@ -16,6 +17,16 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Configuración de CORS para permitir peticiones desde el frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 app.include_router(casos.router)
 app.include_router(users.router)
