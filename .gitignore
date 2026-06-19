@@ -12,3 +12,13 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
