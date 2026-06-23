@@ -1,14 +1,41 @@
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 from app.core.config import settings
 import logging
 
 logger = logging.getLogger("uvicorn.error")
+
+SEQUENCE_SOURCES = {
+    "id_auditoria": ("historial_cambios_casos", "id_auditoria"),
+    "id_seguimiento": ("seguimiento", "id_seguimiento"),
+}
 
 class MongoDB:
     client: AsyncIOMotorClient = None
     db = None
 
 db_client = MongoDB()
+
+async def sync_sequence_counters(db):
+    """Alinea los contadores con el máximo ID ya existente en cada colección."""
+    for sequence_name, (collection_name, field_name) in SEQUENCE_SOURCES.items():
+        max_doc = await db[collection_name].find_one(sort=[(field_name, -1)])
+        max_value = max_doc[field_name] if max_doc else 0
+        current = await db["contador_secuencias"].find_one({"_id": sequence_name})
+        current_value = current.get("valor_secuencial", 0) if current else 0
+
+        if current_value < max_value:
+            await db["contador_secuencias"].update_one(
+                {"_id": sequence_name},
+                {"$set": {"valor_secuencial": max_value}},
+                upsert=True,
+            )
+            logger.info(
+                "Contador '%s' sincronizado: %s -> %s",
+                sequence_name,
+                current_value,
+                max_value,
+            )
 
 async def connect_to_mongo():
     """Inicializa la conexión con MongoDB Atlas / Local."""
@@ -19,6 +46,8 @@ async def connect_to_mongo():
         # Hacemos un ping rápido para verificar que la conexión sea exitosa
         await db_client.client.admin.command('ping')
         logger.info("✅ Conexión exitosa a MongoDB establecida.")
+
+        await sync_sequence_counters(db_client.db)
 
         # Sembrar datos semilla de Estados si no existen
         estados_count = await db_client.db["estados"].count_documents({})
@@ -60,6 +89,6 @@ async def get_next_sequence_value(sequence_name: str, db) -> int:
         {"_id": sequence_name},
         {"$inc": {"valor_secuencial": 1}},
         upsert=True,
-        return_document=True
+        return_document=ReturnDocument.AFTER,
     )
-    return resultado["valor_secuencial"]
+    return resultado["valor_secuencial"]

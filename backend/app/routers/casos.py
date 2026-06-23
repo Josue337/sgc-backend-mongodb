@@ -1,5 +1,6 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
+from pymongo import ReturnDocument
 from app.core.database import get_database, get_next_sequence_value
 from app.schemas.caso import CasoCreate, CasoUpdate, CasoResponse
 from typing import List
@@ -125,7 +126,7 @@ async def actualizar_caso(
     caso_actualizado = await db["casos"].find_one_and_update(
         {"id_caso": id_caso},
         {"$set": campos_a_actualizar},
-        return_document=True
+        return_document=ReturnDocument.AFTER,
     )
     
     if not caso_actualizado:
@@ -157,7 +158,7 @@ async def eliminar_caso(id_caso: int, db = Depends(get_database)):
     resultado = await db["casos"].find_one_and_update(
         {"id_caso": id_caso},
         {"$set": {"activo": False}},
-        return_document=True
+        return_document=ReturnDocument.AFTER,
     )
     
     return {"message": f"Caso {id_caso} desactivado correctamente y auditado."}
