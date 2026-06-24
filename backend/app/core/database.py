@@ -16,6 +16,29 @@ class MongoDB:
 
 db_client = MongoDB()
 
+def _mask_mongo_uri(uri: str) -> str:
+    if "@" not in uri:
+        return uri
+    scheme, rest = uri.split("://", 1)
+    creds, host = rest.split("@", 1)
+    user = creds.split(":", 1)[0]
+    return f"{scheme}://{user}:****@{host}"
+
+def _mongo_uris_to_try() -> list[str]:
+    uris: list[str] = []
+    for uri in (settings.MONGO_URI_DIRECT, settings.MONGO_URI, settings.MONGO_FALLBACK_URI):
+        if uri and uri not in uris:
+            uris.append(uri)
+    return uris
+
+async def _connect_client(uri: str) -> AsyncIOMotorClient:
+    client = AsyncIOMotorClient(
+        uri,
+        serverSelectionTimeoutMS=settings.MONGO_CONNECT_TIMEOUT_MS,
+    )
+    await client.admin.command("ping")
+    return client
+
 async def sync_sequence_counters(db):
     """Alinea los contadores con el máximo ID ya existente en cada colección."""
     for sequence_name, (collection_name, field_name) in SEQUENCE_SOURCES.items():
@@ -39,14 +62,29 @@ async def sync_sequence_counters(db):
 
 async def connect_to_mongo():
     """Inicializa la conexión con MongoDB Atlas / Local."""
-    try:
-        db_client.client = AsyncIOMotorClient(settings.MONGO_URI)
-        db_client.db = db_client.client[settings.DATABASE_NAME]
-        
-        # Hacemos un ping rápido para verificar que la conexión sea exitosa
-        await db_client.client.admin.command('ping')
-        logger.info("✅ Conexión exitosa a MongoDB establecida.")
+    last_error = None
 
+    for uri in _mongo_uris_to_try():
+        try:
+            db_client.client = await _connect_client(uri)
+            db_client.db = db_client.client[settings.DATABASE_NAME]
+            logger.info(
+                "✅ Conexión exitosa a MongoDB (%s).",
+                _mask_mongo_uri(uri),
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "No se pudo conectar con %s: %s",
+                _mask_mongo_uri(uri),
+                exc,
+            )
+    else:
+        logger.error("❌ No fue posible conectar a ninguna URI de MongoDB.")
+        raise last_error
+
+    try:
         await sync_sequence_counters(db_client.db)
 
         # Sembrar datos semilla de Estados si no existen
